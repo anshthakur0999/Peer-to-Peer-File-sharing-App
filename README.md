@@ -2,7 +2,7 @@
 
 A secure peer-to-peer file sharing web application built with React, TypeScript, and WebRTC. Share files directly between browsers with end-to-end encryption, no server storage required.
 
-#Access the Site
+## Access the Site
 ```https://p2pft.netlify.app/```
 
 ## Prerequisites
