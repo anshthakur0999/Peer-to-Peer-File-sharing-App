@@ -118,22 +118,24 @@ export const FileTransferItem: React.FC<FileTransferItemProps> = ({ transfer, tr
 
   return (
     <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm">
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-2 gap-2">
         <div>
-          <p className="font-medium text-gray-900 dark:text-white">{transfer.name}</p>
+          <div className="flex items-center gap-2">
+            <p className="font-medium text-gray-900 dark:text-white break-all">{transfer.name}</p>
+            {getStatusIcon()}
+            {transfer.secure && (
+              <div title="Secure transfer with end-to-end encryption" className="flex-shrink-0">
+                <Lock className="w-4 h-4 text-green-500" />
+              </div>
+            )}
+          </div>
           <p className="text-sm text-gray-500 dark:text-gray-400">{formatSize(transfer.size)}</p>
           <p className={`text-xs flex items-center mt-1 ${transfer.status === 'transferring' && transfer.estimatedTimeRemaining ? 'text-blue-600 dark:text-blue-400 font-medium' : 'text-gray-500 dark:text-gray-400'}`}>
-            <Clock className="w-3 h-3 mr-1" />
+            <Clock className="w-3 h-3 mr-1 flex-shrink-0" />
             {formatTransferTime()}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {getStatusIcon()}
-          {transfer.secure && (
-            <div title="Secure transfer with end-to-end encryption">
-              <Lock className="w-4 h-4 text-green-500" />
-            </div>
-          )}
+        <div className="flex items-center gap-2 mt-2 sm:mt-0">
           {transfer.status === 'completed' && transfer.blob && (
             <button
               onClick={handleDownload}

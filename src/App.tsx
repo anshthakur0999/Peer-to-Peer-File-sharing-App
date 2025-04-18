@@ -1109,7 +1109,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-      <div className="max-w-4xl mx-auto p-6">
+      <div className="max-w-4xl mx-auto p-3 sm:p-6">
         <div className="flex justify-end mb-4">
           <ThemeToggle />
         </div>
@@ -1122,12 +1122,12 @@ function App() {
         </div>
 
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6 mb-6">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-4">
             <div>
               <h2 className="text-lg font-medium text-gray-900 dark:text-white">Your Peer ID</h2>
               <p className="text-sm text-gray-500 dark:text-gray-400">Share this ID with others to connect</p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button
                 onClick={copyPeerId}
                 className="inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
@@ -1148,14 +1148,14 @@ function App() {
               </button>
             </div>
           </div>
-          <div className="bg-gray-50 dark:bg-gray-900 p-3 rounded-md font-mono text-sm text-gray-900 dark:text-gray-100">
+          <div className="bg-gray-50 dark:bg-gray-900 p-3 rounded-md font-mono text-sm text-gray-900 dark:text-gray-100 break-all">
             {peerId}
           </div>
         </div>
 
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6 mb-6">
           <h2 className="text-lg font-medium text-gray-900 dark:text-white mb-4">Connect to Peer</h2>
-          <div className="flex gap-4">
+          <div className="flex flex-col sm:flex-row gap-4">
             <input
               type="text"
               value={targetPeerId}
@@ -1163,28 +1163,30 @@ function App() {
               placeholder="Enter peer ID to connect"
               className="flex-1 rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
             />
-            <button
-              onClick={() => setShowScanner(true)}
-              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-            >
-              <Camera className="w-5 h-5" />
-            </button>
-            <button
-              onClick={connectToPeer}
-              disabled={!targetPeerId}
-              className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-300 dark:disabled:bg-gray-600"
-            >
-              Connect
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowScanner(true)}
+                className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              >
+                <Camera className="w-5 h-5" />
+              </button>
+              <button
+                onClick={connectToPeer}
+                disabled={!targetPeerId}
+                className="flex-1 px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-300 dark:disabled:bg-gray-600"
+              >
+                Connect
+              </button>
+            </div>
           </div>
         </div>
 
         {connection && (
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6 mb-6">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6 gap-4">
               <div>
                 <h2 className="text-lg font-medium text-gray-900 dark:text-white">File Transfer</h2>
-                <p className="text-sm text-gray-500 dark:text-gray-400">
+                <p className="text-sm text-gray-500 dark:text-gray-400 break-all">
                   Connected to: {connection.id}
                   <span className={`ml-2 inline-block w-2 h-2 rounded-full ${
                     connectionQuality === 'good' ? 'bg-green-500' :
@@ -1198,7 +1200,7 @@ function App() {
                   )}
                 </p>
               </div>
-              <div className="flex gap-4">
+              <div className="flex flex-wrap gap-2">
                 <input
                   type="file"
                   ref={fileInputRef}
@@ -1206,18 +1208,14 @@ function App() {
                   multiple
                   className="hidden"
                 />
-                <div className="flex items-center mr-4">
-                  <button
-                    onClick={() => setSecureMode(!secureMode)}
-                    className={`flex items-center px-3 py-1 rounded-md text-sm ${secureMode ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'}`}
-                    title={secureMode ? 'Using secure end-to-end encryption' : 'Using standard encryption'}
-                  >
-                    <div>
-                      <Lock className={`w-4 h-4 mr-1 ${secureMode ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'}`} />
-                    </div>
-                    {secureMode ? 'Secure' : 'Standard'}
-                  </button>
-                </div>
+                <button
+                  onClick={() => setSecureMode(!secureMode)}
+                  className={`flex items-center px-3 py-1 rounded-md text-sm ${secureMode ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'}`}
+                  title={secureMode ? 'Using secure end-to-end encryption' : 'Using standard encryption'}
+                >
+                  <Lock className={`w-4 h-4 mr-1 ${secureMode ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'}`} />
+                  {secureMode ? 'Secure' : 'Standard'}
+                </button>
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
@@ -1248,19 +1246,19 @@ function App() {
                   {previewFiles.map((file, index) => (
                     <div
                       key={index}
-                      className="flex items-center justify-between p-3 bg-white dark:bg-gray-800 rounded-md"
+                      className="flex flex-col sm:flex-row sm:items-center justify-between p-3 bg-white dark:bg-gray-800 rounded-md gap-2"
                     >
                       <div className="flex items-center gap-3">
                         {getFileIcon(file.type)}
-                        <div>
-                          <p className="text-sm font-medium text-gray-900 dark:text-white">{file.name}</p>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-gray-900 dark:text-white break-all">{file.name}</p>
                           <p className="text-sm text-gray-500 dark:text-gray-400">{formatSize(file.size)}</p>
                         </div>
                       </div>
                       {processingFiles.size === 0 && (
                         <button
                           onClick={() => setPreviewFiles(prev => prev.filter((_, i) => i !== index))}
-                          className="text-gray-400 hover:text-gray-500 dark:hover:text-gray-300"
+                          className="text-gray-400 hover:text-gray-500 dark:hover:text-gray-300 flex-shrink-0"
                         >
                           <X className="w-4 h-4" />
                         </button>
@@ -1289,13 +1287,13 @@ function App() {
                 <div className="space-y-4">
                   {pendingTransfers.map((transfer) => (
                     <div key={transfer.fileId} className="bg-gray-50 dark:bg-gray-900 p-4 rounded-lg">
-                      <div className="flex items-center justify-between">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                         <div>
                           <div className="flex items-center gap-2">
-                            <p className="font-medium text-gray-900 dark:text-white">{transfer.fileName}</p>
+                            <p className="font-medium text-gray-900 dark:text-white break-all">{transfer.fileName}</p>
                             {transfer.secure && (
                               <div title="Secure transfer with end-to-end encryption">
-                                <Lock className="w-4 h-4 text-green-500" />
+                                <Lock className="w-4 h-4 text-green-500 flex-shrink-0" />
                               </div>
                             )}
                           </div>
