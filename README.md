@@ -2,8 +2,9 @@
 
 A browser-based peer-to-peer file sharing application built with React, TypeScript, and PeerJS. This application allows users to share files directly between browsers without requiring a central server for file storage or transfer.
 
-## Access the Site
-```[https://p2pft.netlify.app/](https://peer-to-peer-file-sharing-app.vercel.app/)```
+## Live Demo
+
+Try the application: [https://peer-to-peer-file-sharing-app.vercel.app/](https://peer-to-peer-file-sharing-app.vercel.app/)
 
 ## Features
 
