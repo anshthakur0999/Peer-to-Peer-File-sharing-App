@@ -1,5 +1,7 @@
-import { FileEncryption } from '../types';
+import { FileEncryption, SecureFileEncryption } from '../types';
+import { getSessionKey } from './keyExchange';
 
+// Legacy functions kept for backward compatibility
 export async function generateEncryptionKey(): Promise<CryptoKey> {
   return await window.crypto.subtle.generateKey(
     {
@@ -27,6 +29,7 @@ export async function importKey(keyStr: string): Promise<CryptoKey> {
   );
 }
 
+// Legacy encryption function (kept for backward compatibility)
 export async function encryptFile(file: File): Promise<FileEncryption> {
   const key = await generateEncryptionKey();
   const iv = window.crypto.getRandomValues(new Uint8Array(12));
@@ -42,7 +45,7 @@ export async function encryptFile(file: File): Promise<FileEncryption> {
   );
 
   const exportedKey = await exportKey(key);
-  
+
   return {
     data: new Blob([encryptedData]),
     iv: Array.from(iv),
@@ -50,6 +53,34 @@ export async function encryptFile(file: File): Promise<FileEncryption> {
   };
 }
 
+// New secure encryption function using pre-exchanged keys
+export async function secureEncryptFile(file: File, sessionId: string): Promise<SecureFileEncryption> {
+  // Get the session key that was established during key exchange
+  const key = getSessionKey(sessionId);
+  if (!key) {
+    throw new Error('No session key found for this session ID');
+  }
+
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const arrayBuffer = await file.arrayBuffer();
+
+  const encryptedData = await window.crypto.subtle.encrypt(
+    {
+      name: 'AES-GCM',
+      iv
+    },
+    key,
+    arrayBuffer
+  );
+
+  return {
+    data: new Blob([encryptedData]),
+    iv: Array.from(iv),
+    sessionId
+  };
+}
+
+// Legacy decryption function (kept for backward compatibility)
 export async function decryptFile(
   encryptedBlob: Blob,
   keyStr: string,
@@ -69,4 +100,36 @@ export async function decryptFile(
   );
 
   return new Blob([decryptedData], { type });
+}
+
+// New secure decryption function using pre-exchanged keys
+export async function secureDecryptFile(
+  encryptedBlob: Blob,
+  sessionId: string,
+  iv: number[],
+  type: string
+): Promise<Blob> {
+  // Get the session key that was established during key exchange
+  const key = getSessionKey(sessionId);
+  if (!key) {
+    throw new Error('No session key found for this session ID');
+  }
+
+  const arrayBuffer = await encryptedBlob.arrayBuffer();
+
+  try {
+    const decryptedData = await window.crypto.subtle.decrypt(
+      {
+        name: 'AES-GCM',
+        iv: new Uint8Array(iv)
+      },
+      key,
+      arrayBuffer
+    );
+
+    return new Blob([decryptedData], { type });
+  } catch (error) {
+    console.error('Decryption failed:', error);
+    throw new Error('Failed to decrypt file. The encryption key may be incorrect or the file may be corrupted.');
+  }
 }

@@ -1,12 +1,24 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Peer from 'peerjs';
-import { Share2, Upload, Download, Copy, CheckCircle, X, FileText, Image, Film, Music, Archive, File, QrCode, Camera } from 'lucide-react';
-import { FileTransfer, PeerConnection, FilePreview, FileTransferMessage } from './types';
+import { Share2, Upload, Download, Copy, CheckCircle, X, FileText, Image, Film, Music, Archive, File, QrCode, Camera, Lock } from 'lucide-react';
+import { FileTransfer, PeerConnection, FilePreview } from './types';
 import { FileTransferItem } from './components/FileTransferItem';
 import { ThemeToggle } from './components/ui/theme-toggle';
 import { QRCodeModal } from './components/QRCodeModal';
 import { QRScanner } from './components/QRScanner';
-import { encryptFile } from './lib/encryption';
+import { encryptFile, secureEncryptFile } from './lib/encryption';
+import {
+  generateKeyPair,
+  exportPublicKey,
+  importPublicKey,
+  deriveSharedSecret,
+  generateSessionId,
+  storeSessionKey
+} from './lib/keyExchange';
+
+// Optimized chunk size and concurrency for maximum performance
+const CHUNK_SIZE = 2097152; // 2MB chunks (increased from 1MB)
+const MAX_CHUNKS_IN_FLIGHT = 30; // Increased number of chunks to send simultaneously
 
 function App() {
   const [peerId, setPeerId] = useState<string>('');
@@ -22,25 +34,89 @@ function App() {
     fileName: string;
     fileSize: number;
     fileType: string;
+    secure?: boolean;
   }[]>([]);
   const [processingFiles, setProcessingFiles] = useState<Set<string>>(new Set());
   const [connectionQuality, setConnectionQuality] = useState<'good' | 'fair' | 'poor'>('good');
   const [showQRModal, setShowQRModal] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const [transferSpeed, setTransferSpeed] = useState<number>(0); // in bytes per second
+  const [transferTimes, setTransferTimes] = useState<{ [key: string]: { start: number, end?: number } }>({});
+  const [secureMode, setSecureMode] = useState<boolean>(true); // Default to secure mode
+  const transferSpeedRef = useRef<{ [key: string]: number }>({});
   const peerRef = useRef<Peer>();
   const connRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileChunksRef = useRef<{ [key: string]: ArrayBuffer[] }>({});
+  const chunksInFlightRef = useRef<{ [key: string]: number }>({}); // Track chunks being sent
+  const lastChunkTimeRef = useRef<number>(0);
+  const downloadBytesRef = useRef<number>(0);
+  const keyPairRef = useRef<CryptoKeyPair | null>(null);
+  const pendingKeyExchangeRef = useRef<{ [sessionId: string]: { resolve: (value: boolean) => void } }>({});
+  const cancelledTransfersRef = useRef<Set<string>>(new Set()); // Track cancelled transfers
+
+  // Log when processingFiles changes
+  useEffect(() => {
+    console.log('processingFiles changed:', [...processingFiles]);
+  }, [processingFiles]);
+
+  // Clean up references when component unmounts
+  useEffect(() => {
+    return () => {
+      // Clean up any active transfers
+      Object.keys(chunksInFlightRef.current).forEach(fileId => {
+        if (connRef.current) {
+          connRef.current.send({
+            type: 'file-cancel',
+            fileId
+          });
+        }
+      });
+
+      // Clear references
+      chunksInFlightRef.current = {};
+      fileChunksRef.current = {};
+      cancelledTransfersRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
-    const peer = new Peer();
-    
+    const peer = new Peer({
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' },
+          // Add public TURN servers for better connectivity
+          {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+          }
+        ],
+        // Optimize WebRTC configuration for better performance
+        iceTransportPolicy: 'all',
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        sdpSemantics: 'unified-plan'
+      }
+    });
+
     peer.on('open', (id) => {
       setPeerId(id);
       peerRef.current = peer;
     });
 
     peer.on('connection', (conn) => {
+      // serialization is read-only, must be set during connection creation
+      // conn.serialization = 'binary';
       connRef.current = conn;
       setupConnection(conn);
     });
@@ -50,9 +126,61 @@ function App() {
     };
   }, []);
 
+  // Generate a key pair for ECDH key exchange
+  const generateAndStoreKeyPair = async () => {
+    try {
+      const keyPair = await generateKeyPair();
+      keyPairRef.current = keyPair;
+      return keyPair;
+    } catch (error) {
+      console.error('Error generating key pair:', error);
+      throw error;
+    }
+  };
+
+  // Initiate key exchange with peer
+  const initiateKeyExchange = async (sessionId: string) => {
+    if (!connRef.current || !connRef.current.open) {
+      throw new Error('No active connection');
+    }
+
+    try {
+      console.log('Initiating key exchange with sessionId:', sessionId);
+      // Generate a key pair if we don't have one
+      if (!keyPairRef.current) {
+        console.log('Generating new key pair');
+        await generateAndStoreKeyPair();
+      }
+
+      // Export our public key
+      const publicKeyStr = await exportPublicKey(keyPairRef.current!.publicKey);
+      console.log('Exported public key for sessionId:', sessionId);
+
+      // Send our public key to the peer
+      connRef.current.send({
+        type: 'key-exchange-init',
+        publicKey: publicKeyStr,
+        sessionId
+      });
+      console.log('Sent key-exchange-init for sessionId:', sessionId);
+
+      // Return a promise that will be resolved when key exchange is complete
+      return new Promise<boolean>((resolve) => {
+        console.log('Creating pending key exchange for sessionId:', sessionId);
+        pendingKeyExchangeRef.current[sessionId] = { resolve };
+      });
+    } catch (error) {
+      console.error('Error initiating key exchange:', error);
+      throw error;
+    }
+  };
+
   const setupConnection = (conn: any) => {
     conn.on('open', () => {
       setConnection({ id: conn.peer, connected: true });
+
+      // Generate a key pair when connection is established
+      generateAndStoreKeyPair();
     });
 
     conn.on('data', handleIncomingData);
@@ -60,25 +188,111 @@ function App() {
     conn.on('close', () => {
       setConnection(null);
       connRef.current = null;
+      // Clear key pair when connection is closed
+      keyPairRef.current = null;
     });
 
     conn.on('error', (err: any) => {
       console.error('Connection error:', err);
       setConnection(null);
       connRef.current = null;
+      // Clear key pair on error
+      keyPairRef.current = null;
     });
   };
 
   const handleIncomingData = async (data: any) => {
-    if (data.type === 'file-request') {
+    // Handle key exchange messages
+    if (data.type === 'key-exchange-init') {
+      try {
+        console.log('Received key-exchange-init with sessionId:', data.sessionId);
+        // Generate a key pair if we don't have one
+        if (!keyPairRef.current) {
+          await generateAndStoreKeyPair();
+        }
+
+        // Import the peer's public key
+        const peerPublicKey = await importPublicKey(data.publicKey);
+
+        // Derive the shared secret
+        const sharedKey = await deriveSharedSecret(keyPairRef.current!.privateKey, peerPublicKey);
+
+        // Store the shared key with the session ID
+        storeSessionKey(data.sessionId, sharedKey);
+
+        // Export our public key
+        const publicKeyStr = await exportPublicKey(keyPairRef.current!.publicKey);
+
+        // Send our public key to the peer
+        connRef.current.send({
+          type: 'key-exchange-reply',
+          publicKey: publicKeyStr,
+          sessionId: data.sessionId
+        });
+        console.log('Sent key-exchange-reply for sessionId:', data.sessionId);
+      } catch (error) {
+        console.error('Error handling key exchange init:', error);
+      }
+    } else if (data.type === 'key-exchange-reply') {
+      try {
+        console.log('Received key-exchange-reply for sessionId:', data.sessionId);
+        // Import the peer's public key
+        const peerPublicKey = await importPublicKey(data.publicKey);
+
+        // Derive the shared secret
+        const sharedKey = await deriveSharedSecret(keyPairRef.current!.privateKey, peerPublicKey);
+
+        // Store the shared key with the session ID
+        storeSessionKey(data.sessionId, sharedKey);
+
+        // Send confirmation that key exchange is complete
+        connRef.current.send({
+          type: 'key-exchange-complete',
+          sessionId: data.sessionId
+        });
+        console.log('Sent key-exchange-complete for sessionId:', data.sessionId);
+
+        // Resolve the promise for this key exchange
+        if (pendingKeyExchangeRef.current[data.sessionId]) {
+          console.log('Resolving pending key exchange for sessionId:', data.sessionId);
+          pendingKeyExchangeRef.current[data.sessionId].resolve(true);
+          delete pendingKeyExchangeRef.current[data.sessionId];
+        } else {
+          console.warn('No pending key exchange found for sessionId:', data.sessionId);
+        }
+      } catch (error) {
+        console.error('Error handling key exchange reply:', error);
+        // Resolve with failure
+        if (pendingKeyExchangeRef.current[data.sessionId]) {
+          pendingKeyExchangeRef.current[data.sessionId].resolve(false);
+          delete pendingKeyExchangeRef.current[data.sessionId];
+        }
+      }
+    } else if (data.type === 'key-exchange-complete') {
+      // Key exchange is complete, nothing more to do
+      console.log('Received key-exchange-complete for sessionId:', data.sessionId);
+    }
+    // Handle file transfer messages
+    else if (data.type === 'file-request') {
       setPendingTransfers(prev => [...prev, {
         fileId: data.fileId,
         fileName: data.fileName,
         fileSize: data.fileSize,
-        fileType: data.fileType
+        fileType: data.fileType,
+        secure: data.secure
       }]);
     } else if (data.type === 'file-start') {
-      fileChunksRef.current[data.fileId] = new Array(Math.ceil(data.fileSize / 16384));
+      fileChunksRef.current[data.fileId] = new Array(Math.ceil(data.fileSize / CHUNK_SIZE));
+
+      // Record start time for the receiving file
+      setTransferTimes(prev => ({
+        ...prev,
+        [data.fileId]: { start: Date.now() }
+      }));
+
+      // Initialize transfer speed for this file
+      transferSpeedRef.current[data.fileId] = 0;
+
       setTransfers(prev => [...prev, {
         id: data.fileId,
         name: data.fileName,
@@ -90,38 +304,152 @@ function App() {
         iv: data.iv
       }]);
     } else if (data.type === 'file-chunk') {
+      // Check if this transfer has been cancelled
+      if (cancelledTransfersRef.current.has(data.fileId)) {
+        console.log(`Ignoring chunk for cancelled transfer ${data.fileId}`);
+        return;
+      }
+
       if (!fileChunksRef.current[data.fileId]) {
         fileChunksRef.current[data.fileId] = [];
       }
       fileChunksRef.current[data.fileId][data.chunk] = data.data;
-      
-      setTransfers(prev => prev.map(t => 
-        t.id === data.fileId 
-          ? { ...t, progress: Math.round((data.chunk + 1) * 100 / data.total), status: 'transferring' }
-          : t
-      ));
+
+      // Calculate download speed
+      const now = performance.now();
+      downloadBytesRef.current += data.data.byteLength;
+
+      // Update speed calculation
+      const updateSpeed = () => {
+        const elapsedSeconds = (now - lastChunkTimeRef.current) / 1000;
+        if (elapsedSeconds > 0) {
+          const speed = downloadBytesRef.current / elapsedSeconds;
+          setTransferSpeed(speed);
+
+          // Store the speed for this specific file
+          transferSpeedRef.current[data.fileId] = speed;
+        }
+
+        downloadBytesRef.current = 0;
+        lastChunkTimeRef.current = now;
+      };
+
+      // If this is one of the first few chunks, update speed more frequently
+      // to get an initial estimate quickly
+      if (data.chunk < 5 || now - lastChunkTimeRef.current > 1000) {
+        updateSpeed();
+      }
+
+      // Calculate progress and estimated time remaining
+      const progress = Math.round((data.chunk + 1) * 100 / data.total);
+      const transfer = transfers.find(t => t.id === data.fileId);
+
+      if (transfer) {
+        const estimatedTimeRemaining = calculateEstimatedTimeRemaining(
+          data.fileId,
+          progress,
+          transfer.size
+        );
+
+        setTransfers(prev => prev.map(t =>
+          t.id === data.fileId
+            ? {
+                ...t,
+                progress,
+                status: 'transferring',
+                estimatedTimeRemaining
+              }
+            : t
+        ));
+      } else {
+        setTransfers(prev => prev.map(t =>
+          t.id === data.fileId
+            ? { ...t, progress, status: 'transferring' }
+            : t
+        ));
+      }
+
+      // Send acknowledgment for received chunk (unless cancelled)
+      if (!cancelledTransfersRef.current.has(data.fileId)) {
+        connRef.current?.send({
+          type: 'chunk-ack',
+          fileId: data.fileId,
+          chunk: data.chunk
+        });
+      }
 
       if (data.chunk === data.total - 1) {
         const chunks = fileChunksRef.current[data.fileId].filter(chunk => chunk !== undefined);
-        const blob = new Blob(chunks, { 
-          type: transfers.find(t => t.id === data.fileId)?.type || 'application/octet-stream' 
+        const blob = new Blob(chunks, {
+          type: transfers.find(t => t.id === data.fileId)?.type || 'application/octet-stream'
         });
-        
-        setTransfers(prev => prev.map(t => 
-          t.id === data.fileId 
+
+        // Record end time for completed transfer
+        setTransferTimes(prev => ({
+          ...prev,
+          [data.fileId]: { ...prev[data.fileId], end: Date.now() }
+        }));
+
+        setTransfers(prev => prev.map(t =>
+          t.id === data.fileId
             ? { ...t, blob, progress: 100, status: 'completed' }
             : t
         ));
 
         delete fileChunksRef.current[data.fileId];
       }
+    } else if (data.type === 'chunk-ack') {
+      // Decrease the in-flight counter when chunk is acknowledged
+      if (chunksInFlightRef.current[data.fileId]) {
+        chunksInFlightRef.current[data.fileId]--;
+      }
+    } else if (data.type === 'file-cancel') {
+      // Handle file cancellation request from peer
+      console.log(`Received cancellation request for file ${data.fileId}`);
+
+      // Mark the transfer as cancelled in our reference
+      cancelledTransfersRef.current.add(data.fileId);
+
+      // Update the transfer status to cancelled
+      setTransfers(prev => prev.map(t =>
+        t.id === data.fileId
+          ? { ...t, status: 'cancelled' }
+          : t
+      ));
+
+      // Record end time for cancelled transfer
+      setTransferTimes(prev => ({
+        ...prev,
+        [data.fileId]: { ...prev[data.fileId], end: Date.now() }
+      }));
+
+      // Clean up resources
+      delete fileChunksRef.current[data.fileId];
+      delete chunksInFlightRef.current[data.fileId];
+
+      // Send acknowledgment
+      connRef.current?.send({
+        type: 'file-cancel-ack',
+        fileId: data.fileId
+      });
+    } else if (data.type === 'file-cancel-ack') {
+      // Handle cancellation acknowledgment
+      console.log(`Received cancellation acknowledgment for file ${data.fileId}`);
+      // No additional action needed as we've already updated our state
     }
   };
 
   const connectToPeer = () => {
     if (!peerRef.current || !targetPeerId) return;
-    
-    const conn = peerRef.current.connect(targetPeerId);
+
+    const conn = peerRef.current.connect(targetPeerId, {
+      reliable: true,
+      serialization: 'binary',
+      // Optimize data channel for high throughput
+      metadata: {
+        optimizedForHighThroughput: true
+      }
+    });
     connRef.current = conn;
     setupConnection(conn);
   };
@@ -156,52 +484,124 @@ function App() {
       throw new Error('No active connection');
     }
 
-    const { data: encryptedData, key, iv } = await encryptFile(file);
-  
-    connRef.current.send({
-      type: 'file-request',
-      fileId,
-      fileName: file.name,
-      fileSize: encryptedData.size,
-      fileType: file.type,
-      key,
-      iv
-    });
-  
-    return new Promise<boolean>((resolve) => {
-      const handleResponse = (data: any) => {
-        if (data.type === 'file-accepted' && data.fileId === fileId) {
-          startFileTransfer(encryptedData, fileId, file.name, file.type, key, iv);
-          setProcessingFiles(prev => {
-            const next = new Set(prev);
-            next.delete(fileId);
-            return next;
-          });
-          connRef.current.off('data', handleResponse);
-          resolve(true);
-        } else if (data.type === 'file-rejected' && data.fileId === fileId) {
-          setTransfers(prev => [...prev, {
-            id: fileId,
-            name: file.name,
-            size: file.size,
-            type: file.type,
-            progress: 0,
-            status: 'rejected'
-          }]);
-          setProcessingFiles(prev => {
-            const next = new Set(prev);
-            next.delete(fileId);
-            return next;
-          });
-          connRef.current.off('data', handleResponse);
-          resolve(false);
+    let encryptedData: Blob | undefined;
+    let key: string | undefined;
+    let iv: number[] | undefined;
+    let sessionId: string | undefined;
+    let secure = secureMode;
+
+    try {
+      console.log(`Starting to send file ${file.name} (${fileId}), secure mode: ${secure}`);
+
+      if (secure) {
+        try {
+          // Perform key exchange first
+          let exchangeSessionId = generateSessionId();
+          console.log(`Generated session ID for key exchange: ${exchangeSessionId}`);
+
+          console.log(`Initiating key exchange for file ${file.name}`);
+          const keyExchangeSuccess = await initiateKeyExchange(exchangeSessionId);
+          console.log(`Key exchange ${keyExchangeSuccess ? 'succeeded' : 'failed'} for file ${file.name}`);
+
+          if (!keyExchangeSuccess) {
+            console.warn('Key exchange failed, falling back to legacy encryption');
+            secure = false;
+          } else {
+            // Use secure encryption with the exchanged key
+            console.log(`Using secure encryption with session ID: ${exchangeSessionId}`);
+            const secureEncryption = await secureEncryptFile(file, exchangeSessionId);
+            encryptedData = secureEncryption.data;
+            iv = secureEncryption.iv;
+            sessionId = exchangeSessionId;
+            console.log(`File ${file.name} encrypted securely, size: ${encryptedData.size} bytes`);
+          }
+        } catch (error) {
+          console.error('Error during key exchange or secure encryption:', error);
+          console.warn('Falling back to legacy encryption due to error');
+          secure = false;
         }
-      };
-  
-      connRef.current.on('data', handleResponse);
-    });
+      }
+
+      // Fall back to legacy encryption if secure mode is disabled or key exchange failed
+      if (!secure) {
+        console.log(`Using legacy encryption for file ${file.name}`);
+        const legacyEncryption = await encryptFile(file);
+        encryptedData = legacyEncryption.data;
+        key = legacyEncryption.key;
+        iv = legacyEncryption.iv;
+        console.log(`File ${file.name} encrypted with legacy method, size: ${encryptedData.size} bytes`);
+      }
+
+      // Send file request with appropriate encryption info
+      console.log(`Sending file-request for ${file.name} (${fileId}), secure: ${secure}`);
+
+      if (!encryptedData) {
+        throw new Error('Failed to encrypt file');
+      }
+
+      connRef.current.send({
+        type: 'file-request',
+        fileId,
+        fileName: file.name,
+        fileSize: encryptedData.size,
+        fileType: file.type,
+        key, // Only included for legacy encryption
+        iv,
+        sessionId, // Only included for secure encryption
+        secure
+      });
+
+      return new Promise<boolean>((resolve) => {
+        console.log(`Waiting for response to file-request for ${file.name} (${fileId})`);
+
+        const handleResponse = (data: any) => {
+          console.log(`Received response for file ${fileId}:`, data.type);
+
+          if (data.type === 'file-accepted' && data.fileId === fileId) {
+            console.log(`File ${file.name} (${fileId}) was accepted, starting transfer`);
+
+            if (!encryptedData) {
+              console.error(`Missing encrypted data for file ${file.name}`);
+              resolve(false);
+              return;
+            }
+
+            if (secure && sessionId) {
+              console.log(`Starting secure file transfer for ${file.name} with session ID ${sessionId}`);
+              startSecureFileTransfer(encryptedData, fileId, file.name, file.type, sessionId, iv!);
+            } else {
+              console.log(`Starting legacy file transfer for ${file.name}`);
+              startFileTransfer(encryptedData, fileId, file.name, file.type, key!, iv!);
+            }
+
+            connRef.current.off('data', handleResponse);
+            resolve(true);
+          } else if (data.type === 'file-rejected' && data.fileId === fileId) {
+            console.log(`File ${file.name} (${fileId}) was rejected`);
+
+            setTransfers(prev => [...prev, {
+              id: fileId,
+              name: file.name,
+              size: file.size,
+              type: file.type,
+              progress: 0,
+              status: 'rejected'
+            }]);
+
+            connRef.current.off('data', handleResponse);
+            resolve(false);
+          }
+        };
+
+        connRef.current.on('data', handleResponse);
+      });
+    } catch (error) {
+      console.error(`Error sending file ${file.name}:`, error);
+      throw error;
+    }
   };
 
+  // Legacy file transfer function
   const startFileTransfer = (
     encryptedBlob: Blob,
     fileId: string,
@@ -210,9 +610,15 @@ function App() {
     key: string,
     iv: number[]
   ) => {
-    const chunkSize = 16384;
-    const totalChunks = Math.ceil(encryptedBlob.size / chunkSize);
-    
+    // File cancellation feature has been removed
+    const totalChunks = Math.ceil(encryptedBlob.size / CHUNK_SIZE);
+
+    // Record start time
+    setTransferTimes(prev => ({
+      ...prev,
+      [fileId]: { start: Date.now() }
+    }));
+
     setTransfers(prev => [...prev, {
       id: fileId,
       name: fileName,
@@ -231,74 +637,296 @@ function App() {
       fileSize: encryptedBlob.size,
       fileType,
       key,
-      iv
+      iv,
+      secure: false
     });
 
-    const reader = new FileReader();
+    chunksInFlightRef.current[fileId] = 0;
     let currentChunk = 0;
     const startTime = performance.now();
+    let lastUpdateTime = startTime;
+    let bytesTransferred = 0;
 
-    const readNextChunk = () => {
-      const start = currentChunk * chunkSize;
-      const end = Math.min(start + chunkSize, encryptedBlob.size);
+    const sendChunk = async (chunkIndex: number) => {
+      const start = chunkIndex * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, encryptedBlob.size);
       const slice = encryptedBlob.slice(start, end);
-      reader.readAsArrayBuffer(slice);
-    };
+      const buffer = await slice.arrayBuffer();
 
-    reader.onload = (e) => {
-      if (e.target?.result && connRef.current) {
-        const transferSpeed = chunkSize / (performance.now() - startTime);
-        setConnectionQuality(checkConnectionQuality(transferSpeed));
-        
-        connRef.current.send({
-          type: 'file-chunk',
-          fileId,
-          chunk: currentChunk,
-          total: totalChunks,
-          data: e.target.result
-        });
-  
-        setTransfers(prev => prev.map(t => 
-          t.id === fileId 
-            ? { ...t, progress: Math.round((currentChunk + 1) * 100 / totalChunks), status: 'transferring' }
-            : t
-        ));
-  
-        currentChunk++;
-        
-        if (currentChunk < totalChunks) {
-          setTimeout(readNextChunk, 10);
-        } else {
-          connRef.current.send({
-            type: 'file-complete',
-            fileId
-          });
-  
-          setTransfers(prev => prev.map(t => 
-            t.id === fileId 
-              ? { ...t, progress: 100, status: 'completed' }
-              : t
-          ));
+      connRef.current?.send({
+        type: 'file-chunk',
+        fileId,
+        chunk: chunkIndex,
+        total: totalChunks,
+        data: buffer
+      });
+
+      chunksInFlightRef.current[fileId]++;
+
+      // Update bytes transferred and calculate speed
+      bytesTransferred += buffer.byteLength;
+      const now = performance.now();
+
+      // Update speed calculation
+      const updateSpeed = () => {
+        const elapsedSeconds = (now - lastUpdateTime) / 1000;
+        if (elapsedSeconds > 0) {
+          const speed = bytesTransferred / elapsedSeconds;
+          setTransferSpeed(speed);
+
+          // Store the speed for this specific file
+          transferSpeedRef.current[fileId] = speed;
         }
+
+        bytesTransferred = 0;
+        lastUpdateTime = now;
+      };
+
+      // If this is one of the first few chunks, update speed more frequently
+      // to get an initial estimate quickly
+      if (chunkIndex < 5 || now - lastUpdateTime > 1000) {
+        updateSpeed();
       }
     };
 
-    reader.onerror = () => {
-      setTransfers(prev => prev.map(t => 
-        t.id === fileId 
-          ? { ...t, status: 'error' }
-          : t
-      ));
+    // Process chunks with cancellation support
+    const processNextChunks = async () => {
+      while (currentChunk < totalChunks &&
+             chunksInFlightRef.current[fileId] < MAX_CHUNKS_IN_FLIGHT) {
+        // Check if transfer has been cancelled
+        if (cancelledTransfersRef.current.has(fileId)) {
+          console.log(`Transfer ${fileId} was cancelled, stopping chunk processing`);
+          break;
+        }
+
+        const transfer = transfers.find(t => t.id === fileId);
+        if (transfer?.status === 'cancelled') {
+          console.log(`Transfer ${fileId} was cancelled (status), stopping chunk processing`);
+          break;
+        }
+
+        await sendChunk(currentChunk);
+        currentChunk++;
+
+        const transferSpeed = (currentChunk * CHUNK_SIZE) / (performance.now() - startTime);
+        setConnectionQuality(checkConnectionQuality(transferSpeed));
+
+        const progress = Math.round(currentChunk * 100 / totalChunks);
+        const estimatedTimeRemaining = calculateEstimatedTimeRemaining(
+          fileId,
+          progress,
+          encryptedBlob.size
+        );
+
+        setTransfers(prev => prev.map(t =>
+          t.id === fileId
+            ? {
+                ...t,
+                progress,
+                status: 'transferring',
+                estimatedTimeRemaining
+              }
+            : t
+        ));
+
+        if (currentChunk === totalChunks) {
+          connRef.current?.send({
+            type: 'file-complete',
+            fileId
+          });
+
+          // Record end time for completed transfer
+          setTransferTimes(prev => ({
+            ...prev,
+            [fileId]: { ...prev[fileId], end: Date.now() }
+          }));
+
+          setTransfers(prev => prev.map(t =>
+            t.id === fileId
+              ? { ...t, progress: 100, status: 'completed' }
+              : t
+          ));
+
+          delete chunksInFlightRef.current[fileId];
+          break;
+        }
+      }
+
+      if (currentChunk < totalChunks) {
+        // Reduced timeout to minimize latency between chunk batches
+        setTimeout(processNextChunks, 5);
+      }
     };
 
-    readNextChunk();
+    processNextChunks();
+  };
+
+  // Secure file transfer function using pre-exchanged keys
+  const startSecureFileTransfer = (
+    encryptedBlob: Blob,
+    fileId: string,
+    fileName: string,
+    fileType: string,
+    sessionId: string,
+    iv: number[]
+  ) => {
+    // File cancellation feature has been removed
+    const totalChunks = Math.ceil(encryptedBlob.size / CHUNK_SIZE);
+
+    // Record start time
+    setTransferTimes(prev => ({
+      ...prev,
+      [fileId]: { start: Date.now() }
+    }));
+
+    setTransfers(prev => [...prev, {
+      id: fileId,
+      name: fileName,
+      size: encryptedBlob.size,
+      type: fileType,
+      progress: 0,
+      status: 'pending',
+      sessionId,
+      iv,
+      secure: true
+    }]);
+
+    connRef.current.send({
+      type: 'file-start',
+      fileId,
+      fileName,
+      fileSize: encryptedBlob.size,
+      fileType,
+      sessionId,
+      iv,
+      secure: true
+    });
+
+    chunksInFlightRef.current[fileId] = 0;
+    let currentChunk = 0;
+    const startTime = performance.now();
+    let lastUpdateTime = startTime;
+    let bytesTransferred = 0;
+
+    const sendChunk = async (chunkIndex: number) => {
+      const start = chunkIndex * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, encryptedBlob.size);
+      const slice = encryptedBlob.slice(start, end);
+      const buffer = await slice.arrayBuffer();
+
+      connRef.current?.send({
+        type: 'file-chunk',
+        fileId,
+        chunk: chunkIndex,
+        total: totalChunks,
+        data: buffer
+      });
+
+      chunksInFlightRef.current[fileId]++;
+
+      // Update bytes transferred and calculate speed
+      bytesTransferred += buffer.byteLength;
+      const now = performance.now();
+
+      // Update speed calculation
+      const updateSpeed = () => {
+        const elapsedSeconds = (now - lastUpdateTime) / 1000;
+        if (elapsedSeconds > 0) {
+          const speed = bytesTransferred / elapsedSeconds;
+          setTransferSpeed(speed);
+
+          // Store the speed for this specific file
+          transferSpeedRef.current[fileId] = speed;
+        }
+
+        bytesTransferred = 0;
+        lastUpdateTime = now;
+      };
+
+      // If this is one of the first few chunks, update speed more frequently
+      // to get an initial estimate quickly
+      if (chunkIndex < 5 || now - lastUpdateTime > 1000) {
+        updateSpeed();
+      }
+    };
+
+    // Process chunks with cancellation support
+    const processNextChunks = async () => {
+      while (currentChunk < totalChunks &&
+             chunksInFlightRef.current[fileId] < MAX_CHUNKS_IN_FLIGHT) {
+        // Check if transfer has been cancelled
+        if (cancelledTransfersRef.current.has(fileId)) {
+          console.log(`Transfer ${fileId} was cancelled, stopping chunk processing`);
+          break;
+        }
+
+        const transfer = transfers.find(t => t.id === fileId);
+        if (transfer?.status === 'cancelled') {
+          console.log(`Transfer ${fileId} was cancelled (status), stopping chunk processing`);
+          break;
+        }
+
+        await sendChunk(currentChunk);
+        currentChunk++;
+
+        const transferSpeed = (currentChunk * CHUNK_SIZE) / (performance.now() - startTime);
+        setConnectionQuality(checkConnectionQuality(transferSpeed));
+
+        const progress = Math.round(currentChunk * 100 / totalChunks);
+        const estimatedTimeRemaining = calculateEstimatedTimeRemaining(
+          fileId,
+          progress,
+          encryptedBlob.size
+        );
+
+        setTransfers(prev => prev.map(t =>
+          t.id === fileId
+            ? {
+                ...t,
+                progress,
+                status: 'transferring',
+                estimatedTimeRemaining
+              }
+            : t
+        ));
+
+        if (currentChunk === totalChunks) {
+          connRef.current?.send({
+            type: 'file-complete',
+            fileId
+          });
+
+          // Record end time for completed transfer
+          setTransferTimes(prev => ({
+            ...prev,
+            [fileId]: { ...prev[fileId], end: Date.now() }
+          }));
+
+          setTransfers(prev => prev.map(t =>
+            t.id === fileId
+              ? { ...t, progress: 100, status: 'completed' }
+              : t
+          ));
+
+          delete chunksInFlightRef.current[fileId];
+          break;
+        }
+      }
+
+      if (currentChunk < totalChunks) {
+        // Reduced timeout to minimize latency between chunk batches
+        setTimeout(processNextChunks, 5);
+      }
+    };
+
+    processNextChunks();
   };
 
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setDragOver(false);
     if (!connRef.current || !connRef.current.open) return;
-    
+
     const files = Array.from(e.dataTransfer.files);
     const previews = files.map(file => ({
       name: file.name,
@@ -335,23 +963,58 @@ function App() {
 
   const handleSendFiles = async () => {
     if (!connection || !connRef.current) return;
-  
+
     try {
-      for (const filePreview of previewFiles) {
-        const fileId = Math.random().toString(36).substring(7);
-        setProcessingFiles(prev => new Set([...prev, fileId]));
-        const accepted = await sendFile(filePreview.file, fileId);
-        
-        if (accepted) {
-          setPreviewFiles(prev => prev.filter(p => p.file !== filePreview.file));
+      // Create a copy of the preview files to iterate over
+      const filesToSend = [...previewFiles];
+      if (filesToSend.length === 0) return;
+
+      let allSuccessful = true;
+
+      // Generate unique IDs for each file
+      const fileIds = filesToSend.map(() => Math.random().toString(36).substring(7));
+
+      // Set processing state immediately to show "Waiting for response"
+      // This is crucial for the UI to update
+      setProcessingFiles(new Set(fileIds));
+      console.log('Set processing files:', fileIds);
+
+      // Process each file sequentially
+      for (let i = 0; i < filesToSend.length; i++) {
+        const filePreview = filesToSend[i];
+        const fileId = fileIds[i];
+
+        try {
+          console.log(`Sending file ${filePreview.name} with ID ${fileId}`);
+          const accepted = await sendFile(filePreview.file, fileId);
+
+          if (!accepted) {
+            console.log(`File ${filePreview.name} was rejected`);
+            allSuccessful = false;
+          }
+        } catch (error) {
+          console.error(`Error sending file ${filePreview.name}:`, error);
+          allSuccessful = false;
+        } finally {
+          // Remove this file from processing set regardless of outcome
+          console.log(`Removing file ${fileId} from processing set`);
+          setProcessingFiles(prev => {
+            const next = new Set([...prev]);
+            next.delete(fileId);
+            return next;
+          });
         }
       }
-  
-      if (previewFiles.length === 0) {
+
+      // After all files are processed, update the UI
+      console.log('All files processed, successful:', allSuccessful);
+      if (allSuccessful) {
+        setPreviewFiles([]);
         setShowPreview(false);
       }
     } catch (error) {
-      console.error('Error sending files:', error);
+      console.error('Error in handleSendFiles:', error);
+      // Clear processing state on error
       setProcessingFiles(new Set());
     }
   };
@@ -379,6 +1042,37 @@ function App() {
     setPendingTransfers(prev => prev.filter(p => p.fileId !== fileId));
   };
 
+  const cancelFileTransfer = (fileId: string) => {
+    if (!connRef.current) return;
+
+    console.log(`Cancelling file transfer for ${fileId}`);
+
+    // Mark the transfer as cancelled in our reference
+    cancelledTransfersRef.current.add(fileId);
+
+    // Send cancellation message to peer
+    connRef.current.send({
+      type: 'file-cancel',
+      fileId: fileId
+    });
+
+    // Update the transfer status to cancelled
+    setTransfers(prev => prev.map(t =>
+      t.id === fileId
+        ? { ...t, status: 'cancelled' }
+        : t
+    ));
+
+    // Record end time for cancelled transfer
+    setTransferTimes(prev => ({
+      ...prev,
+      [fileId]: { ...prev[fileId], end: Date.now() }
+    }));
+
+    // Clean up resources
+    delete chunksInFlightRef.current[fileId];
+  };
+
   const getFileIcon = (type: string) => {
     if (type.startsWith('image/')) return <Image className="w-8 h-8" />;
     if (type.startsWith('video/')) return <Film className="w-8 h-8" />;
@@ -389,9 +1083,28 @@ function App() {
   };
 
   const checkConnectionQuality = (lastTransferSpeed: number) => {
-    if (lastTransferSpeed > 1000000) return 'good';
-    if (lastTransferSpeed > 100000) return 'fair';
-    return 'poor';
+    // Updated thresholds for higher performance expectations
+    if (lastTransferSpeed > 2000000) return 'good'; // 2MB/s or higher is good
+    if (lastTransferSpeed > 500000) return 'fair'; // 500KB/s to 2MB/s is fair
+    return 'poor'; // Below 500KB/s is poor
+  };
+
+  const formatSpeed = (speed: number) => {
+    const k = 1024;
+    const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+    const i = Math.floor(Math.log(speed) / Math.log(k));
+    return parseFloat((speed / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  // Calculate estimated time remaining based on current speed and remaining bytes
+  const calculateEstimatedTimeRemaining = (fileId: string, currentProgress: number, totalSize: number) => {
+    const speed = transferSpeedRef.current[fileId] || 0;
+    if (speed <= 0) return undefined;
+
+    const remainingBytes = totalSize * (1 - currentProgress / 100);
+    const estimatedTimeMs = (remainingBytes / speed) * 1000;
+
+    return Math.max(0, Math.round(estimatedTimeMs));
   };
 
   return (
@@ -472,12 +1185,17 @@ function App() {
               <div>
                 <h2 className="text-lg font-medium text-gray-900 dark:text-white">File Transfer</h2>
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Connected to: {connection.id} 
+                  Connected to: {connection.id}
                   <span className={`ml-2 inline-block w-2 h-2 rounded-full ${
                     connectionQuality === 'good' ? 'bg-green-500' :
                     connectionQuality === 'fair' ? 'bg-yellow-500' :
                     'bg-red-500'
                   }`}></span>
+                  {transferSpeed > 0 && (
+                    <span className="ml-2 text-sm font-medium">
+                      {formatSpeed(transferSpeed)}
+                    </span>
+                  )}
                 </p>
               </div>
               <div className="flex gap-4">
@@ -488,6 +1206,18 @@ function App() {
                   multiple
                   className="hidden"
                 />
+                <div className="flex items-center mr-4">
+                  <button
+                    onClick={() => setSecureMode(!secureMode)}
+                    className={`flex items-center px-3 py-1 rounded-md text-sm ${secureMode ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'}`}
+                    title={secureMode ? 'Using secure end-to-end encryption' : 'Using standard encryption'}
+                  >
+                    <div>
+                      <Lock className={`w-4 h-4 mr-1 ${secureMode ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'}`} />
+                    </div>
+                    {secureMode ? 'Secure' : 'Standard'}
+                  </button>
+                </div>
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
@@ -540,7 +1270,10 @@ function App() {
                 </div>
                 <div className="mt-4 flex justify-end">
                   <button
-                    onClick={handleSendFiles}
+                    onClick={() => {
+                      console.log('Send button clicked, processing files size:', processingFiles.size);
+                      handleSendFiles();
+                    }}
                     disabled={processingFiles.size > 0}
                     className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400"
                   >
@@ -558,7 +1291,14 @@ function App() {
                     <div key={transfer.fileId} className="bg-gray-50 dark:bg-gray-900 p-4 rounded-lg">
                       <div className="flex items-center justify-between">
                         <div>
-                          <p className="font-medium text-gray-900 dark:text-white">{transfer.fileName}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-gray-900 dark:text-white">{transfer.fileName}</p>
+                            {transfer.secure && (
+                              <div title="Secure transfer with end-to-end encryption">
+                                <Lock className="w-4 h-4 text-green-500" />
+                              </div>
+                            )}
+                          </div>
                           <p className="text-sm text-gray-500 dark:text-gray-400">{formatSize(transfer.fileSize)}</p>
                         </div>
                         <div className="flex gap-2">
@@ -597,7 +1337,12 @@ function App() {
 
             <div className="space-y-4 mt-4">
               {transfers.map((transfer) => (
-                <FileTransferItem key={transfer.id} transfer={transfer} />
+                <FileTransferItem
+                  key={transfer.id}
+                  transfer={transfer}
+                  transferTime={transferTimes[transfer.id]}
+                  onCancel={cancelFileTransfer}
+                />
               ))}
               {transfers.length === 0 && (
                 <div className="text-center py-8 text-gray-500 dark:text-gray-400">
@@ -630,3 +1375,22 @@ function App() {
 }
 
 export default App;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
