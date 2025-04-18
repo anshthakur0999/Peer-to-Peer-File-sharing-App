@@ -1,214 +1,98 @@
-# P2P File Sharing Application
+# P2P File Sharing Web App
 
-A secure peer-to-peer file sharing web application built with React, TypeScript, and WebRTC. Share files directly between browsers with end-to-end encryption, no server storage required.
+A browser-based peer-to-peer file sharing application built with React, TypeScript, and PeerJS. This application allows users to share files directly between browsers without requiring a central server for file storage or transfer.
 
 ## Access the Site
-```https://p2pft.netlify.app/```
+```[https://p2pft.netlify.app/](https://peer-to-peer-file-sharing-app.vercel.app/)```
 
-## Prerequisites
+## Features
 
-Before you begin, ensure you have the following installed:
-- [Node.js](https://nodejs.org/) (v16 or higher)
-- [npm](https://www.npmjs.com/) (v7 or higher)
-- [Git](https://git-scm.com/)
+- **Direct P2P File Transfer**: Share files directly between browsers using WebRTC
+- **No File Size Limits**: Transfer files of any size (limited only by browser memory)
+- **End-to-End Encryption**: All file transfers are encrypted for security
+- **QR Code Sharing**: Easily share connection IDs via QR codes
+- **Drag & Drop Interface**: Simple and intuitive file sharing
+- **Real-time Transfer Statistics**: View transfer speed and estimated time remaining
+- **Responsive Design**: Works on desktop and mobile devices
+- **Dark Mode Support**: Toggle between light and dark themes
 
-## Installation
+## Technology Stack
+
+- **Frontend**: React with TypeScript
+- **P2P Communication**: PeerJS (WebRTC)
+- **Styling**: TailwindCSS
+- **Build Tool**: Vite
+- **QR Code**: QRCode.react for generation, jsQR for scanning
+- **Encryption**: Web Crypto API
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js (v14 or higher)
+- npm or yarn
+
+### Installation
 
 1. Clone the repository
 ```bash
-git clone <URL>
+git clone https://github.com/anshthakur0999/Peer-to-Peer-File-sharing-App.git
 cd p2p-file-sharing
 ```
 
 2. Install dependencies
 ```bash
 npm install
+# or
+yarn
 ```
 
-3. Create a `.env` file in the root directory (optional)
-```bash
-VITE_APP_NAME="P2P File Sharing"
-```
-
-## Development
-
-To start the development server:
-
+3. Start the development server
 ```bash
 npm run dev
+# or
+yarn dev
 ```
 
-Visit `http://localhost:5173` in your browser.
+4. Open your browser and navigate to `http://localhost:5173`
 
-## Project Structure
+## Usage
 
-```
-/
-├── src/
-│   ├── components/
-│   │   ├── FileTransferItem.tsx
-│   │   ├── QRCodeModal.tsx
-│   │   ├── QRScanner.tsx
-│   │   └── ui/
-│   │       └── theme-toggle.tsx
-│   ├── lib/
-│   │   ├── encryption.ts
-│   │   └── utils.ts
-│   ├── App.tsx
-│   ├── main.tsx
-│   └── types.ts
-├── public/
-├── index.html
-└── package.json
-```
+1. **Connect to a Peer**:
+   - Share your Peer ID with someone you want to connect with
+   - Or scan their QR code using the "Scan QR Code" button
+   - Enter their Peer ID in the "Connect to Peer" field
 
-## Dependencies
+2. **Send Files**:
+   - Click "Select Files" or drag and drop files onto the drop zone
+   - Review the files and click "Send Files"
+   - The recipient will be prompted to accept the file transfer
 
-Key dependencies used in this project:
+3. **Receive Files**:
+   - Accept incoming file transfer requests
+   - Files will be downloaded automatically once transfer is complete
 
-```json
-{
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "peerjs": "^1.5.2",
-    "lucide-react": "^0.344.0",
-    "qrcode.react": "^3.1.0",
-    "jsqr": "^1.4.0"
-  }
-}
+## Security
+
+This application implements end-to-end encryption for all file transfers:
+
+- Files are encrypted before transmission using the Web Crypto API
+- Key exchange uses ECDH (Elliptic Curve Diffie-Hellman)
+- Each file transfer uses a unique encryption key
+
+## Building for Production
+
+```bash
+npm run build
+# or
+yarn build
 ```
 
-## Features
-
-- 🔐 End-to-end encryption
-- 📁 Direct P2P file transfer
-- 📱 QR code sharing
-- 🌓 Dark/Light theme
-- 📊 Transfer progress tracking
-- 🔄 Connection quality monitoring
-- 📂 Multiple file support
-- 🖥️ Cross-platform compatibility
-
-## 🌟 Core Features
-
-### File Sharing
-- Direct peer-to-peer file transfer
-- Support for multiple file selection
-- Drag and drop file upload
-- Progress tracking for file transfers
-- File preview before sending
-- Automatic file type detection and icons
-- Support for large files with chunked transfer
-
-### Security
-- End-to-end encryption using AES-GCM
-- Secure key exchange
-- No server storage of files
-- Direct WebRTC connections
-
-### Connection Management
-- Unique peer ID generation
-- QR code sharing for easy connection
-- QR code scanning for connecting
-- Connection quality indicator
-- Connection status monitoring
-- Automatic reconnection handling
-
-### User Interface
-- Dark/Light theme support
-- Responsive design
-- File transfer progress bars
-- Transfer status indicators
-- File size formatting
-- File type icons
-- Drag and drop interface
-- Loading states and feedback
-
-## 📋 Detailed Features
-
-### File Transfer Features
-- Multiple file selection and upload
-- File progress tracking
-- File transfer status updates
-- File size display
-- File type detection
-- Transfer speed monitoring
-- Connection quality assessment
-- Chunked file transfer for large files
-- File transfer pause/resume
-- Transfer error handling
-
-### Security Features
-- AES-GCM encryption
-- Unique encryption keys per file
-- Secure key exchange
-- No server storage
-- Direct P2P connections
-- Encrypted data chunks
-
-### Connection Features
-- WebRTC peer connections
-- Unique peer ID generation
-- QR code peer ID sharing
-- QR code scanning
-- Connection status monitoring
-- Connection quality indicators
-- Auto-reconnection
-- Error handling
-
-### UI/UX Features
-- Dark/Light theme toggle
-- Responsive design
-- Drag and drop interface
-- File previews
-- Progress indicators
-- Status notifications
-- Loading states
-- Error messages
-- Success feedback
-- Clean, modern interface
-
-### File Management
-- File type detection
-- File size calculation
-- File chunking
-- Progress tracking
-- Status management
-- Error handling
-- Download management
-
-## 🔄 Data Flow
-
-1. **File Selection**
-   - Multiple file selection
-   - Drag and drop support
-   - File preview
-   - Type detection
-
-2. **Connection**
-   - Peer ID generation
-   - QR code sharing
-   - Direct P2P connection
-   - Connection monitoring
-
-3. **Transfer**
-   - File encryption
-   - Chunked transfer
-   - Progress tracking
-   - Status updates
-
-4. **Reception**
-   - Chunk assembly
-   - Decryption
-   - File reconstruction
-   - Download handling
+The built files will be in the `dist` directory and can be served by any static file server.
 
 ## Acknowledgments
 
-- [PeerJS](https://peerjs.com/)
-- [React](https://reactjs.org/)
-- [Lucide Icons](https://lucide.dev/)
-
-
+- [PeerJS](https://peerjs.com/) for WebRTC implementation
+- [TailwindCSS](https://tailwindcss.com/) for styling
+- [Lucide React](https://lucide.dev/) for icons
 
