@@ -88,3 +88,8 @@ export function removeSessionKey(sessionId: string): void {
     delete sessionKeys[sessionId];
   }
 }
+
+// List all available session keys (for debugging)
+export function listSessionKeys(): string[] {
+  return Object.keys(sessionKeys);
+}

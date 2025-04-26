@@ -13,7 +13,9 @@ import {
   importPublicKey,
   deriveSharedSecret,
   generateSessionId,
-  storeSessionKey
+  storeSessionKey,
+  getSessionKey,
+  listSessionKeys
 } from './lib/keyExchange';
 
 // Optimized chunk size and concurrency for maximum performance
@@ -29,13 +31,19 @@ function App() {
   const [dragOver, setDragOver] = useState(false);
   const [previewFiles, setPreviewFiles] = useState<FilePreview[]>([]);
   const [showPreview, setShowPreview] = useState(false);
-  const [pendingTransfers, setPendingTransfers] = useState<{
+  // Define interface for pending transfers
+  interface PendingTransfer {
     fileId: string;
     fileName: string;
     fileSize: number;
     fileType: string;
     secure?: boolean;
-  }[]>([]);
+    key?: string;
+    iv?: number[];
+    sessionId?: string;
+  }
+
+  const [pendingTransfers, setPendingTransfers] = useState<PendingTransfer[]>([]);
   const [processingFiles, setProcessingFiles] = useState<Set<string>>(new Set());
   const [connectionQuality, setConnectionQuality] = useState<'good' | 'fair' | 'poor'>('good');
   const [showQRModal, setShowQRModal] = useState(false);
@@ -274,14 +282,27 @@ function App() {
     }
     // Handle file transfer messages
     else if (data.type === 'file-request') {
+      console.log(`Received file-request for ${data.fileName} (${data.fileId}), secure: ${data.secure}`, {
+        hasKey: !!data.key,
+        hasIv: !!data.iv,
+        hasSessionId: !!data.sessionId
+      });
+
+      // Store the pending transfer with all encryption information
       setPendingTransfers(prev => [...prev, {
         fileId: data.fileId,
         fileName: data.fileName,
         fileSize: data.fileSize,
         fileType: data.fileType,
-        secure: data.secure
+        secure: data.secure,
+        key: data.key,
+        iv: data.iv,
+        sessionId: data.sessionId
       }]);
     } else if (data.type === 'file-start') {
+      console.log(`Received file-start for ${data.fileName} (${data.fileId}), secure: ${data.secure}`,
+                  data.secure ? `sessionId: ${data.sessionId}` : `key: ${data.key ? 'present' : 'missing'}`);
+
       fileChunksRef.current[data.fileId] = new Array(Math.ceil(data.fileSize / CHUNK_SIZE));
 
       // Record start time for the receiving file
@@ -293,16 +314,30 @@ function App() {
       // Initialize transfer speed for this file
       transferSpeedRef.current[data.fileId] = 0;
 
-      setTransfers(prev => [...prev, {
+      // Create transfer object with appropriate encryption info based on secure mode
+      const transferObj: FileTransfer = {
         id: data.fileId,
         name: data.fileName,
         size: data.fileSize,
         type: data.fileType,
         progress: 0,
         status: 'pending',
-        key: data.key,
-        iv: data.iv
-      }]);
+        iv: data.iv,
+        secure: data.secure
+      };
+
+      // Add the appropriate encryption information based on secure mode
+      if (data.secure && data.sessionId) {
+        transferObj.sessionId = data.sessionId;
+        console.log(`Added sessionId ${data.sessionId} to transfer ${data.fileId}`);
+      } else if (data.key) {
+        transferObj.key = data.key;
+        console.log(`Added key to transfer ${data.fileId}`);
+      } else {
+        console.warn(`Missing encryption information for file ${data.fileName} (${data.fileId})`);
+      }
+
+      setTransfers(prev => [...prev, transferObj]);
     } else if (data.type === 'file-chunk') {
       // Check if this transfer has been cancelled
       if (cancelledTransfersRef.current.has(data.fileId)) {
@@ -539,7 +574,8 @@ function App() {
         throw new Error('Failed to encrypt file');
       }
 
-      connRef.current.send({
+      // Create file request message with appropriate encryption info
+      const fileRequestMessage = {
         type: 'file-request',
         fileId,
         fileName: file.name,
@@ -549,7 +585,17 @@ function App() {
         iv,
         sessionId, // Only included for secure encryption
         secure
+      };
+
+      console.log(`File request encryption details for ${fileId}:`, {
+        secure,
+        hasKey: !!fileRequestMessage.key,
+        hasIv: !!fileRequestMessage.iv,
+        hasSessionId: !!fileRequestMessage.sessionId,
+        ivLength: fileRequestMessage.iv?.length
       });
+
+      connRef.current.send(fileRequestMessage);
 
       return new Promise<boolean>((resolve) => {
         console.log(`Waiting for response to file-request for ${file.name} (${fileId})`);
@@ -613,13 +659,16 @@ function App() {
     // File cancellation feature has been removed
     const totalChunks = Math.ceil(encryptedBlob.size / CHUNK_SIZE);
 
+    console.log(`Starting legacy file transfer for ${fileName} (${fileId}) with key`);
+
     // Record start time
     setTransferTimes(prev => ({
       ...prev,
       [fileId]: { start: Date.now() }
     }));
 
-    setTransfers(prev => [...prev, {
+    // Create transfer object with legacy encryption info
+    const transferObj: FileTransfer = {
       id: fileId,
       name: fileName,
       size: encryptedBlob.size,
@@ -627,10 +676,14 @@ function App() {
       progress: 0,
       status: 'pending',
       key,
-      iv
-    }]);
+      iv,
+      secure: false
+    };
 
-    connRef.current.send({
+    setTransfers(prev => [...prev, transferObj]);
+
+    // Send file-start message with legacy encryption info
+    const fileStartMessage = {
       type: 'file-start',
       fileId,
       fileName,
@@ -639,7 +692,15 @@ function App() {
       key,
       iv,
       secure: false
+    };
+
+    console.log(`Sending file-start for legacy transfer ${fileId}:`, {
+      hasKey: !!fileStartMessage.key,
+      ivLength: fileStartMessage.iv.length,
+      secure: fileStartMessage.secure
     });
+
+    connRef.current.send(fileStartMessage);
 
     chunksInFlightRef.current[fileId] = 0;
     let currentChunk = 0;
@@ -773,13 +834,16 @@ function App() {
     // File cancellation feature has been removed
     const totalChunks = Math.ceil(encryptedBlob.size / CHUNK_SIZE);
 
+    console.log(`Starting secure file transfer for ${fileName} (${fileId}) with sessionId: ${sessionId}`);
+
     // Record start time
     setTransferTimes(prev => ({
       ...prev,
       [fileId]: { start: Date.now() }
     }));
 
-    setTransfers(prev => [...prev, {
+    // Create transfer object with secure encryption info
+    const transferObj: FileTransfer = {
       id: fileId,
       name: fileName,
       size: encryptedBlob.size,
@@ -789,9 +853,12 @@ function App() {
       sessionId,
       iv,
       secure: true
-    }]);
+    };
 
-    connRef.current.send({
+    setTransfers(prev => [...prev, transferObj]);
+
+    // Send file-start message with secure encryption info
+    const fileStartMessage = {
       type: 'file-start',
       fileId,
       fileName,
@@ -800,7 +867,15 @@ function App() {
       sessionId,
       iv,
       secure: true
+    };
+
+    console.log(`Sending file-start for secure transfer ${fileId}:`, {
+      hasSessionId: !!fileStartMessage.sessionId,
+      ivLength: fileStartMessage.iv.length,
+      secure: fileStartMessage.secure
     });
+
+    connRef.current.send(fileStartMessage);
 
     chunksInFlightRef.current[fileId] = 0;
     let currentChunk = 0;
@@ -1022,6 +1097,24 @@ function App() {
   const acceptFileTransfer = (fileId: string) => {
     const pendingTransfer = pendingTransfers.find(p => p.fileId === fileId);
     if (!pendingTransfer || !connRef.current) return;
+
+    console.log(`Accepting file transfer for ${pendingTransfer.fileName} (${fileId})`, {
+      secure: pendingTransfer.secure,
+      hasKey: !!pendingTransfer.key,
+      hasSessionId: !!pendingTransfer.sessionId,
+      hasIv: !!pendingTransfer.iv
+    });
+
+    // If this is a secure transfer, make sure we have the session key
+    if (pendingTransfer.secure && pendingTransfer.sessionId) {
+      const sessionKey = getSessionKey(pendingTransfer.sessionId);
+      if (!sessionKey) {
+        console.warn(`No session key found for sessionId: ${pendingTransfer.sessionId}. This may cause decryption issues.`);
+        console.log('Available session keys:', listSessionKeys());
+      } else {
+        console.log(`Found session key for sessionId: ${pendingTransfer.sessionId}`);
+      }
+    }
 
     connRef.current.send({
       type: 'file-accepted',
@@ -1373,22 +1466,3 @@ function App() {
 }
 
 export default App;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

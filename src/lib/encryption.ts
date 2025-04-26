@@ -1,5 +1,5 @@
 import { FileEncryption, SecureFileEncryption } from '../types';
-import { getSessionKey } from './keyExchange';
+import { getSessionKey, listSessionKeys } from './keyExchange';
 
 // Legacy functions kept for backward compatibility
 export async function generateEncryptionKey(): Promise<CryptoKey> {
@@ -109,13 +109,21 @@ export async function secureDecryptFile(
   iv: number[],
   type: string
 ): Promise<Blob> {
+  console.log(`Attempting secure decryption with sessionId: ${sessionId}`);
+
   // Get the session key that was established during key exchange
   const key = getSessionKey(sessionId);
   if (!key) {
-    throw new Error('No session key found for this session ID');
+    console.error(`No session key found for sessionId: ${sessionId}`);
+    // List all available session keys
+    const availableKeys = listSessionKeys();
+    console.log('Available session keys:', availableKeys);
+    throw new Error('Missing encryption information: No session key found for this session ID');
   }
 
+  console.log(`Found session key for sessionId: ${sessionId}`);
   const arrayBuffer = await encryptedBlob.arrayBuffer();
+  console.log(`Decrypting blob of size: ${arrayBuffer.byteLength} bytes with IV length: ${iv.length}`);
 
   try {
     const decryptedData = await window.crypto.subtle.decrypt(
@@ -127,6 +135,7 @@ export async function secureDecryptFile(
       arrayBuffer
     );
 
+    console.log(`Successfully decrypted data, size: ${decryptedData.byteLength} bytes`);
     return new Blob([decryptedData], { type });
   } catch (error) {
     console.error('Decryption failed:', error);

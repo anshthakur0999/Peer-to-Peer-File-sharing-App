@@ -33,13 +33,29 @@ export const FileTransferItem: React.FC<FileTransferItemProps> = ({ transfer, tr
   };
 
   const handleDownload = async () => {
-    if (!transfer.blob || !transfer.iv) return;
+    if (!transfer.blob || !transfer.iv) {
+      console.error('Cannot download: missing blob or IV', {
+        hasBlob: !!transfer.blob,
+        hasIv: !!transfer.iv
+      });
+      return;
+    }
 
     try {
+      console.log('Starting download for file:', transfer.name, {
+        id: transfer.id,
+        secure: transfer.secure,
+        hasSessionId: !!transfer.sessionId,
+        hasKey: !!transfer.key,
+        ivLength: transfer.iv.length,
+        blobSize: transfer.blob.size
+      });
+
       let decryptedBlob;
 
       // Use the appropriate decryption method based on whether this is a secure transfer
       if (transfer.secure && transfer.sessionId) {
+        console.log(`Using secure decryption with sessionId: ${transfer.sessionId}`);
         // Secure decryption using pre-exchanged key
         decryptedBlob = await secureDecryptFile(
           transfer.blob,
@@ -48,6 +64,7 @@ export const FileTransferItem: React.FC<FileTransferItemProps> = ({ transfer, tr
           transfer.type
         );
       } else if (transfer.key) {
+        console.log('Using legacy decryption with key');
         // Legacy decryption
         decryptedBlob = await decryptFile(
           transfer.blob,
@@ -56,8 +73,15 @@ export const FileTransferItem: React.FC<FileTransferItemProps> = ({ transfer, tr
           transfer.type
         );
       } else {
+        console.error('Missing encryption information', {
+          secure: transfer.secure,
+          hasSessionId: !!transfer.sessionId,
+          hasKey: !!transfer.key
+        });
         throw new Error('Missing encryption information');
       }
+
+      console.log(`Successfully decrypted file: ${transfer.name}`);
 
       // Create download link
       const url = URL.createObjectURL(decryptedBlob);
